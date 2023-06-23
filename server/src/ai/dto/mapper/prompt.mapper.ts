@@ -1,10 +1,10 @@
 import { Injectable } from '@nestjs/common';
-import { Word } from '../../entities/word.entity';
+import { Word, WordType } from '../../entities/word.entity';
 import { PromptResponse } from '../prompt.response';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { DictionaryRelatedWordType, RelatedWord } from '../../entities/related-word.entity';
-import { CommonPhrasesInterface } from '../../ai.types';
+import { CommonPhrasesInterface, FormInterface, UsageExamplesInterface } from '../../ai.types';
 
 @Injectable()
 export class PromptMapper {
@@ -15,22 +15,29 @@ export class PromptMapper {
 	}
 
 	async map(word: Word): Promise<PromptResponse> {
-		const relatedWords = await this.relatedWordRepository.findBy({wordId: word.id});
+		let initialWord: Word = word;
 		const commonPhrases: CommonPhrasesInterface[] = [];
-		const forms: string[] = [];
+		const forms: FormInterface[] = [];
 		const synonyms: string[] = [];
-		const usageExample: string[] = [];
+		const usageExample: UsageExamplesInterface[] = [];
 
+		if (word.type === WordType.Form) {
+			initialWord = await this.wordRepository.findOneBy({id: word.wordId});
+		}
+
+		const relatedForms = await this.wordRepository.findBy({wordId: initialWord.id, type: WordType.Form});
+		relatedForms.forEach(item => {
+			forms.push({form: item.content, pronunciation: item.pronunciation});
+		});
+
+		const relatedWords = await this.relatedWordRepository.findBy({wordId: word.id});
 		relatedWords.forEach(item => {
 			switch (item.type) {
 				case DictionaryRelatedWordType.Synonym:
 					synonyms.push(item.content);
 					break;
-				case DictionaryRelatedWordType.Form:
-					forms.push(item.content);
-					break;
 				case DictionaryRelatedWordType.UsageExample:
-					usageExample.push(item.content);
+					usageExample.push({example: item.content, partOfSpeech: item.partOfSpeech});
 					break;
 				case DictionaryRelatedWordType.CommonPhrase:
 					commonPhrases.push({phrase: item.content, meaning: item.meaning});
@@ -44,8 +51,9 @@ export class PromptMapper {
 			id: word.id,
 			content: word.content,
 			pronunciation: word.pronunciation,
+			initialForm: initialWord?.content,
 			commonPhrases,
-			forms,
+			forms: forms,
 			synonyms,
 			usageExample
 		});

@@ -6,6 +6,10 @@
     font-size: 14px;
 }
 
+.container {
+    position: relative;
+}
+
 .word {
     font-size: 26px;
     font-weight: 700;
@@ -15,6 +19,15 @@
 .pronunciation {
     font-size: 16px;
     color: #333333;
+    margin-bottom: 5px;
+
+    span {
+        font-weight: 600;
+    }
+}
+
+.optText {
+    color: #424242;
 }
 
 .title {
@@ -29,4 +42,11 @@
 
 .phrase {
     font-weight: 500;
+}
+
+.pony {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 1;
 }

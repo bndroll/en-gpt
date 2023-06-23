@@ -1,4 +1,4 @@
-import React, { ChangeEvent, useState } from 'react';
+import React, { useState, ChangeEvent, KeyboardEvent } from 'react';
 import { useLocation, useSearchParams } from 'react-router-dom';
 import styles from './Input.module.scss';
 import searchIcon from '../../assets/icons/search.svg';
@@ -17,6 +17,12 @@ export const Input = () => {
 		setWord(value);
 	};
 
+	const onKeyDownHandler = (event: KeyboardEvent<HTMLInputElement>) => {
+		if (event.key === 'Enter') {
+			searchHandler();
+		}
+	};
+
 	const searchHandler = () => {
 		const query = location.search.split('=')[1];
 		if (query) {
@@ -32,6 +38,7 @@ export const Input = () => {
 						 value={word}
 						 name="word"
 						 onChange={onChangeInputHandler}
+						 onKeyDown={onKeyDownHandler}
 						 placeholder={'Введите слово'}
 			/>
 			<button className={styles.button} onClick={searchHandler}>

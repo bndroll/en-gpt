@@ -1,14 +1,15 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PromptWordDto } from './dto/prompt-word.dto';
-import { generateString, InjectRepository } from '@nestjs/typeorm';
-import { Word } from './entities/word.entity';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Word, WordType } from './entities/word.entity';
 import { DictionaryRelatedWordType, RelatedWord } from './entities/related-word.entity';
 import { Repository } from 'typeorm';
 import { Configuration, OpenAIApi } from 'openai';
 import { generateWordPrompt } from './ai.prompts';
 import { ResponseAI } from './ai.types';
 import { WrongWord } from './entities/wrong-word.entity';
+import { SaveWordDto } from './dto/save-word.dto';
 
 @Injectable()
 export class AiService {
@@ -36,84 +37,123 @@ export class AiService {
 			return oldWord;
 		}
 
-		const oldPhrase = await this.relatedWordRepository.findOneBy({
-			content: dto.word,
-			type: DictionaryRelatedWordType.Form
-		});
-		if (oldPhrase) {
-			return await this.wordRepository.findOneBy({id: oldPhrase.wordId});
+		const response = await this.requestAI(dto.word);
+		if (!response.ok) {
+			await this.wrongWordRepository.save(WrongWord.create({content: dto.word}));
+			throw new BadRequestException('Wrong word');
 		}
 
+		let initialWord: Word | null = null;
+		if (dto.word !== response.data.initialForm) {
+			initialWord = await this.wordRepository.findOneBy({content: response.data.initialForm});
+			if (!initialWord) {
+				const initialWordResponse = await this.requestAI(response.data.initialForm);
+				if (!initialWordResponse.ok) {
+					throw new BadRequestException('Wrong word');
+				}
+
+				initialWord = await this.saveWord({
+					word: response.data.initialForm,
+					wordId: null,
+					type: WordType.Initial,
+					response: initialWordResponse.data
+				});
+			}
+		}
+
+		const responseWordFormType = dto.word === response.data.initialForm ? WordType.Initial : WordType.Form;
+		const savedWord = await this.saveWord({
+			word: dto.word,
+			type: responseWordFormType,
+			wordId: dto.word === response.data.initialForm ? null : initialWord?.id,
+			response: response.data
+		});
+
+		for (const form of response.data.forms) {
+			const oldFormWord = await this.wordRepository.findOneBy({content: form.form});
+			if (oldFormWord) {
+				continue;
+			}
+
+			const formResponse = await this.requestAI(form.form);
+			if (formResponse.ok) {
+				const formResponseWordFormType = form.form === formResponse.data.initialForm ? WordType.Initial : WordType.Form;
+				await this.saveWord({
+					word: form.form,
+					type: formResponseWordFormType,
+					wordId: dto.word === response.data.initialForm ? savedWord.id : initialWord?.id,
+					response: formResponse.data
+				});
+			}
+		}
+
+		return savedWord;
+	}
+
+	private async saveWord({word, type, wordId, response}: SaveWordDto) {
+		const savedWord = await this.wordRepository.save(Word.create({
+			content: word,
+			pronunciation: response.pronunciation,
+			type: type,
+			wordId: wordId
+		}));
+
+		for (const responseKey in response) {
+			switch (responseKey) {
+				case 'usageExamples':
+					await Promise.all(response.usageExamples.map(async (item) => {
+						await this.relatedWordRepository.save(RelatedWord.create({
+							content: item.example,
+							wordId: savedWord.id,
+							partOfSpeech: item.partOfSpeech,
+							type: DictionaryRelatedWordType.UsageExample
+						}));
+					}));
+					break;
+				case 'synonyms':
+					await Promise.all(response.synonyms.map(async (item) => {
+						await this.relatedWordRepository.save(RelatedWord.create({
+							content: item,
+							wordId: savedWord.id,
+							type: DictionaryRelatedWordType.Synonym
+						}));
+					}));
+					break;
+				case 'commonPhrases':
+					await Promise.all(response.commonPhrases.map(async (item) => {
+						await this.relatedWordRepository.save(RelatedWord.create({
+							content: item.phrase,
+							meaning: item.meaning,
+							wordId: savedWord.id,
+							type: DictionaryRelatedWordType.CommonPhrase
+						}));
+					}));
+					break;
+				default:
+					break;
+			}
+		}
+
+		return savedWord;
+	}
+
+	private async requestAI(word: string): Promise<{ ok: true, data: ResponseAI } | { ok: false, error: string }> {
 		try {
 			const response: ResponseAI = await this.openAI.createChatCompletion({
 				model: 'gpt-3.5-turbo',
-				messages: [{role: 'system', content: generateWordPrompt(dto.word)}]
+				messages: [{role: 'system', content: generateWordPrompt(word)}]
 			}).then(r => r.data.choices[0].message.content)
 				.then(r => JSON.parse(r));
 
-			const newWord = new Word();
-			newWord.id = generateString();
-			newWord.content = dto.word;
-			newWord.pronunciation = response.pronunciation;
-			const savedWord = await this.wordRepository.save(newWord);
-
-			for (const responseKey in response) {
-				switch (responseKey) {
-					case 'usageExamples':
-						await Promise.all(response.usageExamples.map(async (item) => {
-							const relatedWord = new RelatedWord();
-							relatedWord.id = generateString();
-							relatedWord.wordId = savedWord.id;
-							relatedWord.content = item.example;
-							relatedWord.type = DictionaryRelatedWordType.UsageExample;
-							await this.relatedWordRepository.save(relatedWord);
-						}));
-						break;
-					case 'forms':
-						await Promise.all(response.forms.map(async (item) => {
-							const relatedWord = new RelatedWord();
-							relatedWord.id = generateString();
-							relatedWord.wordId = savedWord.id;
-							relatedWord.content = item.form;
-							relatedWord.pronunciation = item.pronunciation;
-							relatedWord.type = DictionaryRelatedWordType.Form;
-							await this.relatedWordRepository.save(relatedWord);
-						}));
-						break;
-					case 'synonyms':
-						await Promise.all(response.synonyms.map(async (item) => {
-							const relatedWord = new RelatedWord();
-							relatedWord.id = generateString();
-							relatedWord.wordId = savedWord.id;
-							relatedWord.content = item;
-							relatedWord.type = DictionaryRelatedWordType.Synonym;
-							await this.relatedWordRepository.save(relatedWord);
-						}));
-						break;
-					case 'commonPhrases':
-						await Promise.all(response.commonPhrases.map(async (item) => {
-							const relatedWord = new RelatedWord();
-							relatedWord.id = generateString();
-							relatedWord.wordId = savedWord.id;
-							relatedWord.content = item.phrase;
-							relatedWord.meaning = item.meaning;
-							relatedWord.type = DictionaryRelatedWordType.CommonPhrase;
-							await this.relatedWordRepository.save(relatedWord);
-						}));
-						break;
-					default:
-						break;
-				}
-			}
-
-			return savedWord;
+			return {
+				ok: true,
+				data: response
+			};
 		} catch (e) {
-			const wrongWord = new WrongWord();
-			wrongWord.id = generateString();
-			wrongWord.content = dto.word;
-			wrongWord.expDate = new Date(Date.now() + 1000 * 60 * 60 * 24);
-			await this.wrongWordRepository.save(wrongWord);
-			throw new BadRequestException('Wrong word');
+			return {
+				ok: false,
+				error: 'Wrong word'
+			};
 		}
 	}
 }

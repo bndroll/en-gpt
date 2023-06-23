@@ -1,11 +1,12 @@
-import { CommonPhrasesInterface } from '../ai.types';
+import { CommonPhrasesInterface, FormInterface, UsageExamplesInterface } from '../ai.types';
 
 export class PromptResponse {
 	id: string;
 	content: string;
 	pronunciation: string;
-	usageExample: string[];
-	forms: string[];
+	initialForm: string;
+	usageExample: UsageExamplesInterface[];
+	forms: FormInterface[];
 	synonyms: string[];
 	commonPhrases: CommonPhrasesInterface[];
 }
